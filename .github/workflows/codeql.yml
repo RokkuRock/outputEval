@@ -1,15 +1,7 @@
-# For most projects, this workflow file will not need changing; you simply need
-# to commit it to your repository.
-#
-# You may wish to alter this file to override the set of languages analyzed,
-# or to provide custom queries or build logic.
-#
-# ******** NOTE ********
-# We have attempted to detect the languages in your repository. Please check
-# the `language` matrix defined below to confirm you have the correct set of
-# supported CodeQL languages.
-#
-name: "CodeQL Advanced"
+# 優化的 CodeQL 配置 - 專門用於檢測 C/C++ 記憶體管理漏洞
+# 確保能夠檢測到 double free 和 use after free 等漏洞
+
+name: "CodeQL Advanced - Memory Safety"
 
 on:
   push:
@@ -22,19 +14,13 @@ on:
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    # Runner size impacts CodeQL analysis time. To learn more, please see:
-    #   - https://gh.io/recommended-hardware-resources-for-running-codeql
-    #   - https://gh.io/supported-runners-and-hardware-resources
-    #   - https://gh.io/using-larger-runners (GitHub.com only)
-    # Consider using larger runners or machines with greater resources for possible analysis time improvements.
-    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
       # required for all workflows
       security-events: write
-
       # required to fetch internal or private CodeQL packs
       packages: read
-
       # only required for workflows in private repositories
       actions: read
       contents: read
@@ -44,65 +30,120 @@ jobs:
       matrix:
         include:
         - language: c-cpp
-          build-mode: manual  # 改為 manual 模式
-        # CodeQL supports the following values keywords for 'language': 'actions', 'c-cpp', 'csharp', 'go', 'java-kotlin', 'javascript-typescript', 'python', 'ruby', 'swift'
-        # Use `c-cpp` to analyze code written in C, C++ or both
-        # Use 'java-kotlin' to analyze code written in Java, Kotlin or both
-        # Use 'javascript-typescript' to analyze code written in JavaScript, TypeScript or both
-        # To learn more about changing the languages that are analyzed or customizing the build mode for your analysis,
-        # see https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/customizing-your-advanced-setup-for-code-scanning.
-        # If you are analyzing a compiled language, you can modify the 'build-mode' for that language to customize how
-        # your codebase is analyzed, see https://docs.github.com/en/code-security/code-scanning/creating-an-advanced-setup-for-code-scanning/codeql-code-scanning-for-compiled-languages
+          build-mode: manual
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # Add any setup steps before running the `github/codeql-action/init` action.
-    # This includes steps like installing compilers or runtimes (`actions/setup-node`
-    # or others). This is typically only required for manual builds.
-    # - name: Setup runtime (example)
-    #   uses: actions/setup-example@v1
+    # 設定 C/C++ 編譯工具
+    - name: Setup C/C++ environment
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential gcc g++ clang
+        echo "Compiler versions:"
+        gcc --version
+        g++ --version
 
-    # Initializes the CodeQL tools for scanning.
+    # 初始化 CodeQL
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
-        # If you wish to specify custom queries, you can do so here or in a config file.
-        # By default, queries listed here will override any specified in a config file.
-        # Prefix the list here with "+" to use these queries and those in the config file.
+        # 使用擴展的安全查詢集，特別針對記憶體安全
+        queries: |
+          security-extended
+          security-and-quality
+        # 配置 CodeQL 分析選項
+        config: |
+          name: "Memory Safety Analysis"
+          disable-default-queries: false
+          query-filters:
+            - include:
+              kind: problem
+              tags:
+                - security
+                - correctness
+                - memory-safety
+                - double-free
+                - use-after-free
+          paths:
+            - "**/*.c"
+            - "**/*.cpp"
+            - "**/*.h"
+            - "**/*.hpp"
 
-        # For more details on CodeQL's query packs, refer to: https://docs.github.com/en/code-security/code-scanning/automatically-scanning-your-code-for-vulnerabilities-and-errors/configuring-code-scanning#using-queries-in-ql-packs
-        queries: security-extended,security-and-quality
-
-    # 手動建置步驟 - 針對靜態分析優化
+    # 手動建置步驟 - 專門為靜態分析優化
     - if: matrix.build-mode == 'manual'
+      name: Manual build for static analysis
       shell: bash
       run: |
-        echo "Setting up for static analysis of C/C++ code"
-        echo "Files to be analyzed:"
-        find . -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" | head -20
+        echo "=== 設定靜態分析環境 ==="
+        echo "目標：檢測 double free 和 use after free 漏洞"
         
-        # 為了讓 CodeQL 能夠分析，我們進行簡單的編譯檢查
-        # 這不會產生實際的執行檔，但會讓 CodeQL 建立分析資料庫
-        echo "Performing compilation check for CodeQL analysis..."
+        # 列出所有 C/C++ 文件
+        echo "發現的 C/C++ 文件："
+        find . -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" | sort
         
-        # 編譯所有 C 文件（允許失敗，因為只是為了分析）
-        for file in $(find . -name "*.c"); do
-          echo "Processing: $file"
-          gcc -c "$file" -o /dev/null 2>/dev/null || echo "Note: $file may have compilation issues (ignored for analysis)"
+        # 建立分析友好的編譯環境
+        echo -e "\n=== 建立編譯資料庫 ==="
+        
+        # 為每個 C 文件建立編譯單元
+        for file in $(find . -name "*.c" -type f); do
+          echo "處理文件: $file"
+          filename=$(basename "$file" .c)
+          
+          # 使用多種編譯器標誌來確保完整的分析覆蓋
+          # -fsyntax-only: 只進行語法檢查，不產生目標文件
+          # -g: 包含調試信息
+          # -Wall: 啟用所有警告
+          # -Wextra: 啟用額外警告
+          # -fno-omit-frame-pointer: 保留框架指針以便更好的分析
+          
+          gcc -fsyntax-only -g -Wall -Wextra -fno-omit-frame-pointer "$file" 2>&1 | tee "${filename}_analysis.log" || echo "編譯檢查完成（忽略錯誤）"
+          
+          # 同時使用 clang 進行交叉驗證
+          clang -fsyntax-only -g -Wall -Wextra "$file" 2>&1 | tee "${filename}_clang_analysis.log" || echo "Clang 分析完成（忽略錯誤）"
         done
         
-        # 編譯所有 C++ 文件（允許失敗）
-        for file in $(find . -name "*.cpp"); do
-          echo "Processing: $file"
-          g++ -c "$file" -o /dev/null 2>/dev/null || echo "Note: $file may have compilation issues (ignored for analysis)"
+        # 為 C++ 文件做同樣的處理
+        for file in $(find . -name "*.cpp" -type f); do
+          echo "處理文件: $file"
+          filename=$(basename "$file" .cpp)
+          
+          g++ -fsyntax-only -g -Wall -Wextra -fno-omit-frame-pointer "$file" 2>&1 | tee "${filename}_cpp_analysis.log" || echo "C++ 編譯檢查完成（忽略錯誤）"
+          clang++ -fsyntax-only -g -Wall -Wextra "$file" 2>&1 | tee "${filename}_clang_cpp_analysis.log" || echo "Clang++ 分析完成（忽略錯誤）"
         done
         
-        echo "Static analysis setup completed"
+        echo -e "\n=== 分析環境設定完成 ==="
+        echo "編譯日誌文件："
+        ls -la *.log 2>/dev/null || echo "無編譯日誌"
 
+    # 執行 CodeQL 分析
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
       with:
-        category: "full-scan-${{matrix.language}}"
+        category: "memory-safety-${{matrix.language}}"
+        # 上傳所有結果，包括低嚴重性的問題
+        upload: true
+        # 不要因為發現問題而失敗
+        checkout_path: ${{ github.workspace }}
+
+    # 額外步驟：生成詳細的分析報告
+    - name: Generate analysis summary
+      if: always()
+      run: |
+        echo "=== CodeQL 分析摘要 ==="
+        echo "分析的文件數：$(find . -name "*.c" -o -name "*.cpp" | wc -l)"
+        echo "目標漏洞類型："
+        echo "  1. Double free (重複釋放記憶體)"
+        echo "  2. Use after free (釋放後使用)"
+        echo "  3. Memory leaks (記憶體洩漏)"
+        echo "  4. Buffer overflow (緩衝區溢位)"
+        
+        # 如果有分析日誌，顯示摘要
+        if ls *.log >/dev/null 2>&1; then
+          echo -e "\n編譯器警告摘要："
+          grep -h "warning:" *.log | sort | uniq -c | sort -nr || echo "無編譯器警告"
+        fi
