@@ -1,27 +1,24 @@
-# 優化的 CodeQL 配置 - 專門用於檢測 C/C++ 記憶體管理漏洞
-# 確保能夠檢測到 double free 和 use after free 等漏洞
+# CodeQL Advanced Configuration for Memory Safety Analysis
+# Optimized for detecting double-free and use-after-free vulnerabilities
 
-name: "CodeQL Advanced - Memory Safety"
+name: "CodeQL Advanced Security Analysis"
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
   schedule:
     - cron: '32 3 * * 1'
 
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
+    runs-on: ${{ (matrix.language == 'swift' && 'macos-latest') || 'ubuntu-latest' }}
+    timeout-minutes: 60
     permissions:
-      # required for all workflows
       security-events: write
-      # required to fetch internal or private CodeQL packs
       packages: read
-      # only required for workflows in private repositories
       actions: read
       contents: read
 
@@ -36,14 +33,11 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 設定 C/C++ 編譯工具
-    - name: Setup C/C++ environment
+    # 設置編译環境
+    - name: Setup build environment
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential gcc g++ clang
-        echo "Compiler versions:"
-        gcc --version
-        g++ --version
+        sudo apt-get install -y build-essential gcc g++ libc6-dev
 
     # 初始化 CodeQL
     - name: Initialize CodeQL
@@ -51,99 +45,105 @@ jobs:
       with:
         languages: ${{ matrix.language }}
         build-mode: ${{ matrix.build-mode }}
-        # 使用擴展的安全查詢集，特別針對記憶體安全
+        # 使用擴展的安全查詢集，專門針對記憶體安全問題
         queries: |
           security-extended
           security-and-quality
-        # 配置 CodeQL 分析選項
+        # 自定義配置以提高記憶體漏洞檢測精度
         config: |
-          name: "Memory Safety Analysis"
-          disable-default-queries: false
-          query-filters:
-            - include:
-              kind: problem
-              tags:
-                - security
-                - correctness
-                - memory-safety
-                - double-free
-                - use-after-free
+          name: "Advanced Memory Safety Analysis"
+          queries:
+            - uses: security-extended
+            - uses: security-and-quality
+          paths-ignore:
+            - "**/*.md"
+            - "**/docs/**"
           paths:
+            - src
             - "**/*.c"
             - "**/*.cpp"
             - "**/*.h"
             - "**/*.hpp"
 
-    # 手動建置步驟 - 專門為靜態分析優化
+    # 手動建置步驟 - 專門針對記憶體管理漏洞分析
     - if: matrix.build-mode == 'manual'
-      name: Manual build for static analysis
+      name: Manual build for memory analysis
       shell: bash
       run: |
-        echo "=== 設定靜態分析環境 ==="
-        echo "目標：檢測 double free 和 use after free 漏洞"
+        echo "=== CodeQL Memory Safety Analysis Setup ==="
+        echo "Scanning for C/C++ files..."
         
-        # 列出所有 C/C++ 文件
-        echo "發現的 C/C++ 文件："
-        find . -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" | sort
+        # 列出所有要分析的源文件
+        find . -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "*.hpp" | while read file; do
+          echo "Found: $file"
+        done
         
-        # 建立分析友好的編譯環境
-        echo -e "\n=== 建立編譯資料庫 ==="
+        echo "=== Compiling files for CodeQL analysis ==="
         
-        # 為每個 C 文件建立編譯單元
+        # 設置編譯選項以最大化 CodeQL 的分析能力
+        export CFLAGS="-g -O0 -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+        export CPPFLAGS="-g -O0 -fno-omit-frame-pointer -fno-optimize-sibling-calls"
+        
+        # 編譯所有 C 文件
         for file in $(find . -name "*.c" -type f); do
-          echo "處理文件: $file"
+          echo "Compiling C file: $file"
           filename=$(basename "$file" .c)
           
-          # 使用多種編譯器標誌來確保完整的分析覆蓋
-          # -fsyntax-only: 只進行語法檢查，不產生目標文件
-          # -g: 包含調試信息
-          # -Wall: 啟用所有警告
-          # -Wextra: 啟用額外警告
-          # -fno-omit-frame-pointer: 保留框架指針以便更好的分析
+          # 使用詳細的編譯選項來幫助 CodeQL 分析
+          gcc -g -O0 -Wall -Wextra -fno-omit-frame-pointer \
+              -fstack-protector-all -D_FORTIFY_SOURCE=2 \
+              -c "$file" -o "${filename}.o" 2>&1 | tee "compile_${filename}.log" || true
           
-          gcc -fsyntax-only -g -Wall -Wextra -fno-omit-frame-pointer "$file" 2>&1 | tee "${filename}_analysis.log" || echo "編譯檢查完成（忽略錯誤）"
-          
-          # 同時使用 clang 進行交叉驗證
-          clang -fsyntax-only -g -Wall -Wextra "$file" 2>&1 | tee "${filename}_clang_analysis.log" || echo "Clang 分析完成（忽略錯誤）"
+          # 也嘗試創建可執行文件（如果可能的話）
+          if [ -f "${filename}.o" ]; then
+            gcc -g -O0 "${filename}.o" -o "${filename}" 2>/dev/null || echo "Note: Could not create executable for $file (normal for analysis)"
+          fi
         done
         
-        # 為 C++ 文件做同樣的處理
+        # 編譯所有 C++ 文件
         for file in $(find . -name "*.cpp" -type f); do
-          echo "處理文件: $file"
+          echo "Compiling C++ file: $file"
           filename=$(basename "$file" .cpp)
           
-          g++ -fsyntax-only -g -Wall -Wextra -fno-omit-frame-pointer "$file" 2>&1 | tee "${filename}_cpp_analysis.log" || echo "C++ 編譯檢查完成（忽略錯誤）"
-          clang++ -fsyntax-only -g -Wall -Wextra "$file" 2>&1 | tee "${filename}_clang_cpp_analysis.log" || echo "Clang++ 分析完成（忽略錯誤）"
+          g++ -g -O0 -Wall -Wextra -fno-omit-frame-pointer \
+              -fstack-protector-all -D_FORTIFY_SOURCE=2 \
+              -c "$file" -o "${filename}.o" 2>&1 | tee "compile_${filename}.log" || true
+          
+          if [ -f "${filename}.o" ]; then
+            g++ -g -O0 "${filename}.o" -o "${filename}" 2>/dev/null || echo "Note: Could not create executable for $file (normal for analysis)"
+          fi
         done
         
-        echo -e "\n=== 分析環境設定完成 ==="
-        echo "編譯日誌文件："
-        ls -la *.log 2>/dev/null || echo "無編譯日誌"
+        echo "=== Analysis preparation completed ==="
+        echo "Generated object files:"
+        ls -la *.o 2>/dev/null || echo "No object files generated"
+        
+        # 顯示編譯日誌摘要
+        echo "=== Compilation summary ==="
+        for log in compile_*.log; do
+          if [ -f "$log" ]; then
+            echo "--- $log ---"
+            head -10 "$log"
+          fi
+        done
 
     # 執行 CodeQL 分析
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
       with:
         category: "memory-safety-${{matrix.language}}"
-        # 上傳所有結果，包括低嚴重性的問題
-        upload: true
-        # 不要因為發現問題而失敗
-        checkout_path: ${{ github.workspace }}
+        # 上傳所有結果，不過濾低嚴重性問題
+        upload: "always"
 
-    # 額外步驟：生成詳細的分析報告
-    - name: Generate analysis summary
+    # 生成詳細報告
+    - name: Generate analysis report
       if: always()
       run: |
-        echo "=== CodeQL 分析摘要 ==="
-        echo "分析的文件數：$(find . -name "*.c" -o -name "*.cpp" | wc -l)"
-        echo "目標漏洞類型："
-        echo "  1. Double free (重複釋放記憶體)"
-        echo "  2. Use after free (釋放後使用)"
-        echo "  3. Memory leaks (記憶體洩漏)"
-        echo "  4. Buffer overflow (緩衝區溢位)"
-        
-        # 如果有分析日誌，顯示摘要
-        if ls *.log >/dev/null 2>&1; then
-          echo -e "\n編譯器警告摘要："
-          grep -h "warning:" *.log | sort | uniq -c | sort -nr || echo "無編譯器警告"
-        fi
+        echo "=== CodeQL Analysis Completed ==="
+        echo "Check the Security tab in your GitHub repository for detailed results"
+        echo "Focus areas for this analysis:"
+        echo "- Double-free vulnerabilities"
+        echo "- Use-after-free vulnerabilities" 
+        echo "- Memory leaks"
+        echo "- Buffer overflows"
+        echo "- Implicit function declarations"
