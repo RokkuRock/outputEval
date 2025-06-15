@@ -205,47 +205,106 @@ jobs:
       name: Manual build for C#
       shell: bash
       run: |
-        echo "Setting up manual build for C# project..."
+        echo "=== C# Manual Build Setup ==="
+        echo "Working directory: $(pwd)"
+        echo "Available .NET versions:"
+        dotnet --list-sdks || echo "No .NET SDKs found"
         
-        # 檢查並列出 C# 文件
-        echo "C# files to be analyzed:"
-        find . -name "*.cs" -o -name "*.csproj" -o -name "*.sln" | head -20
+        echo "=== Searching for C# files ==="
+        CS_FILES=$(find . -name "*.cs" -type f | wc -l)
+        echo "Found $CS_FILES C# files:"
+        find . -name "*.cs" -type f | head -10
         
-        # 檢查是否有 .sln 文件
-        if find . -name "*.sln" -print -quit | grep -q .; then
-          echo "Found solution file, building with dotnet..."
-          for sln in $(find . -name "*.sln"); do
-            echo "Building solution: $sln"
-            dotnet build "$sln" --configuration Release --no-restore || echo "Note: $sln build issues (normal for analysis)"
+        echo "=== Searching for project files ==="
+        SLN_FILES=$(find . -name "*.sln" -type f | wc -l)
+        CSPROJ_FILES=$(find . -name "*.csproj" -type f | wc -l)
+        echo "Found $SLN_FILES solution files and $CSPROJ_FILES project files"
+        
+        # 如果沒有找到任何 C# 文件，跳出
+        if [ $CS_FILES -eq 0 ]; then
+          echo "No C# files found - skipping C# build"
+          exit 0
+        fi
+        
+        BUILD_SUCCESS=false
+        
+        # 嘗試建置 .sln 文件
+        if [ $SLN_FILES -gt 0 ]; then
+          echo "=== Building solution files ==="
+          for sln in $(find . -name "*.sln" -type f); do
+            echo "Attempting to build solution: $sln"
+            if dotnet restore "$sln" && dotnet build "$sln" --no-restore --configuration Release --verbosity minimal; then
+              echo "Successfully built solution: $sln"
+              BUILD_SUCCESS=true
+              break
+            else
+              echo "Failed to build solution: $sln"
+            fi
           done
-        # 檢查是否有 .csproj 文件
-        elif find . -name "*.csproj" -print -quit | grep -q .; then
-          echo "Found project files, building with dotnet..."
-          for proj in $(find . -name "*.csproj"); do
-            echo "Building project: $proj"
-            dotnet build "$proj" --configuration Release --no-restore || echo "Note: $proj build issues (normal for analysis)"
+        fi
+        
+        # 如果解決方案建置失敗，嘗試建置 .csproj 文件
+        if [ "$BUILD_SUCCESS" = false ] && [ $CSPROJ_FILES -gt 0 ]; then
+          echo "=== Building project files ==="
+          for proj in $(find . -name "*.csproj" -type f); do
+            echo "Attempting to build project: $proj"
+            if dotnet restore "$proj" && dotnet build "$proj" --no-restore --configuration Release --verbosity minimal; then
+              echo "Successfully built project: $proj"
+              BUILD_SUCCESS=true
+            else
+              echo "Failed to build project: $proj"
+            fi
           done
-        else
-          echo "No solution or project files found, compiling C# files manually..."
-          # 檢查是否有 C# 文件存在
-          if find . -name "*.cs" -print -quit | grep -q .; then
-            # 嘗試創建一個簡單的 csproj 文件
-            echo "Creating temporary project file for C# analysis..."
-            cat > temp_analysis.csproj << 'EOF'
+        fi
+        
+        # 如果所有建置都失敗，創建臨時專案
+        if [ "$BUILD_SUCCESS" = false ]; then
+          echo "=== Creating temporary project for C# analysis ==="
+          
+          # 創建臨時目錄
+          mkdir -p temp_csharp_analysis
+          cd temp_csharp_analysis
+          
+          # 複製所有 C# 文件到臨時目錄
+          find .. -name "*.cs" -type f -exec cp {} . \; 2>/dev/null || true
+          
+          # 創建簡單的 csproj 文件
+          cat > TempAnalysis.csproj << 'EOF'
         <Project Sdk="Microsoft.NET.Sdk">
           <PropertyGroup>
             <TargetFramework>net8.0</TargetFramework>
             <OutputType>Library</OutputType>
+            <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+            <Deterministic>false</Deterministic>
           </PropertyGroup>
           <ItemGroup>
-            <Compile Include="**/*.cs" />
+            <Compile Include="*.cs" />
           </ItemGroup>
         </Project>
         EOF
-            dotnet build temp_analysis.csproj --configuration Release || echo "Note: Manual C# compilation completed"
+          
+          echo "Created temporary project with $(ls *.cs 2>/dev/null | wc -l) C# files"
+          
+          # 嘗試建置臨時專案
+          if dotnet restore TempAnalysis.csproj && dotnet build TempAnalysis.csproj --no-restore --configuration Release --verbosity minimal; then
+            echo "Successfully built temporary C# project"
+            BUILD_SUCCESS=true
           else
-            echo "No C# files found to analyze"
+            echo "Failed to build temporary project, trying compilation without restore..."
+            # 最後嘗試：直接編譯而不進行 restore
+            if dotnet build TempAnalysis.csproj --configuration Release --verbosity minimal; then
+              echo "Successfully built temporary C# project without restore"
+              BUILD_SUCCESS=true
+            fi
           fi
+          
+          cd ..
+        fi
+        
+        if [ "$BUILD_SUCCESS" = true ]; then
+          echo "=== C# Build completed successfully ==="
+        else
+          echo "=== C# Build failed, but CodeQL may still be able to perform partial analysis ==="
         fi
 
     - name: Perform CodeQL Analysis
