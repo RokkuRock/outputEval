@@ -232,16 +232,16 @@ jobs:
             # 嘗試創建一個簡單的 csproj 文件
             echo "Creating temporary project file for C# analysis..."
             cat > temp_analysis.csproj << 'EOF'
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <OutputType>Library</OutputType>
-  </PropertyGroup>
-  <ItemGroup>
-    <Compile Include="**/*.cs" />
-  </ItemGroup>
-</Project>
-EOF
+        <Project Sdk="Microsoft.NET.Sdk">
+          <PropertyGroup>
+            <TargetFramework>net8.0</TargetFramework>
+            <OutputType>Library</OutputType>
+          </PropertyGroup>
+          <ItemGroup>
+            <Compile Include="**/*.cs" />
+          </ItemGroup>
+        </Project>
+        EOF
             dotnet build temp_analysis.csproj --configuration Release || echo "Note: Manual C# compilation completed"
           else
             echo "No C# files found to analyze"
